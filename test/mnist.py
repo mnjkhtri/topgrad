@@ -26,9 +26,7 @@ print(X_train.shape, Y_train.shape, X_valid.shape, Y_valid.shape)
 from topgrad.tensor import Tensor
 from topgrad.optim import SGD
 
-def layer_init_uniform(m, h):
-    ret = np.random.uniform(-1., 1., size=(m,h))/np.sqrt(m*h)
-    return ret.astype(np.float32)
+def layer_init_uniform(m, h): return (np.random.uniform(-1., 1., size=(m,h))/np.sqrt(m*h)).astype(np.float32)
 
 class TopNet:
     def __init__(self):
@@ -50,22 +48,17 @@ for t in tqdm(range(1000)):
     x = Tensor(X_train[samp].reshape((-1, 28*28)))
     Y = Y_train[samp]
     y = np.zeros((len(samp), 10), np.float32)
-
-    y[range(y.shape[0]), Y] = -10.0
-
+    y[range(y.shape[0]), Y] = -10.0 #as we use mean instead of sum
     y = Tensor(y)
-
-    out = model.forward(x)
-
-    loss = out.mul(y).mean()
+    out = model.forward(x) #log(y_pred)
+    loss = out.mul(y).mean() #y_data*log(y_pred) 
     loss.backward()
     optim.step()
 
     cat = np.argmax(out.data, axis=1)
     accuracy = (cat==Y).mean()
 
-    loss = loss.data
-    losses.append(loss)
+    losses.append(loss.data)
     accuracies.append(accuracy)
 
 def numpy_eval():
