@@ -41,18 +41,57 @@ class BasicBlock(nn.Module):
         return out
     
 
+class Bottleneck(nn.Module):
+    
+    expansion = 4
+
+    def __init__(self, in_planes, planes, stride, stride_in_1x1=False):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride if stride_in_1x1 else 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, padding=1, stride=1 if stride_in_1x1 else stride, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, self.expansion*planes, kernel_size=1, stride=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(self.expansion*planes)
+        if stride != 1 or in_planes != self.expansion*planes:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion*planes)
+            )
+        else:
+            self.downsample = None
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        identity = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        if self.downsample is not None:
+            identity = self.downsample(x)
+        out += identity
+        out = self.relu(out)
+        return out
+
+
 class ResNet(nn.Module):
+    
     def __init__(self, num, num_classes=None):
         super().__init__()
         self.num = num
         self.block = {
-            34: BasicBlock,
+            34:  BasicBlock,
+            50:  Bottleneck,
+            101: Bottleneck,
         }[num]
 
         self.num_blocks = {
-            34: [3, 4, 6, 3]
+            34:  [3, 4, 6, 3],
+            50:  [3, 4, 6, 3],
+            101: [3, 4, 23, 3]
         }[num]
 
+        #current state of the in_planes (changes after each block)
         self.in_planes = 64
         # -> (224 x 224) | 3
         
@@ -76,28 +115,41 @@ class ResNet(nn.Module):
         for stride in strides:
             if block == BasicBlock:
                 layers.append(block(self.in_planes, planes, stride))
+            elif block == Bottleneck:
+                layers.append(block(self.in_planes, planes, stride))
             else:
                 raise NotImplementedError
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
     
     def forward(self, x):
+        print("Initially:", x.shape)
         out = self.relu(self.bn1(self.conv1(x)))
         out = self.maxpool(out)
-
+        print("After block0 (7x7 kernel and maxpool):", out.shape)
         out = self.layer1(out)
+        print("After block1 (stride 1 kernel):", out.shape)
         out = self.layer2(out)
+        print("After block2 (stride 2 kernel):", out.shape)
         out = self.layer3(out)
+        print("After block3 (stride 2 kernel):", out.shape)
         out = self.layer4(out)
+        print("After block4 (stride 2 kernel):", out.shape)
 
         out = self.avgpool(out)
+        print("After avgpool:", out.shape)
         out = torch.flatten(out, 1)
         out = self.fc(out)
 
         return out
 
     def load_from_pretrained(self):
-        url = 'https://download.pytorch.org/models/resnet34-333f7ec4.pth'
+        model_urls = {
+            34:  'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
+            50:  'https://download.pytorch.org/models/resnet50-19c8e357.pth',
+            101: 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
+        }
+        url = model_urls[self.num]
         pretrained = torch.hub.load_state_dict_from_url(url)
         self.load_state_dict(pretrained, strict=True)
 
@@ -121,7 +173,7 @@ if __name__ == "__main__":
     img = preprocess(img)
     img = img.unsqueeze(0)
 
-    model = ResNet(34, 1000)
+    model = ResNet(50, 1000)
     model.load_from_pretrained()
     with torch.no_grad():
         model.eval()
