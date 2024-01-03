@@ -94,7 +94,7 @@ class ResNet(nn.Module):
         #current state of the in_planes (changes after each block)
         self.in_planes = 64
         # -> (224 x 224) | 3
-        
+    
         self.conv1 = nn.Conv2d(3, self.in_planes, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(self.in_planes)
         self.relu = nn.ReLU(inplace=True)
@@ -123,21 +123,33 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
     
     def forward(self, x):
+
+        is_feature_only = self.fc is None
+        if is_feature_only: features = []
+
         print("Initially:", x.shape)
         out = self.relu(self.bn1(self.conv1(x)))
         out = self.maxpool(out)
         print("After block0 (7x7 kernel and maxpool):", out.shape)
+        print("---Features---")
         out = self.layer1(out)
         print("After block1 (stride 1 kernel):", out.shape)
+        if is_feature_only: features.append(out)
+
         out = self.layer2(out)
         print("After block2 (stride 2 kernel):", out.shape)
+        if is_feature_only: features.append(out)
+
         out = self.layer3(out)
         print("After block3 (stride 2 kernel):", out.shape)
+        if is_feature_only: features.append(out)
+        
         out = self.layer4(out)
         print("After block4 (stride 2 kernel):", out.shape)
+        if is_feature_only: features.append(out)
+        print("--------------")
 
         out = self.avgpool(out)
-        print("After avgpool:", out.shape)
         out = torch.flatten(out, 1)
         out = self.fc(out)
 
@@ -171,11 +183,12 @@ if __name__ == "__main__":
     ])
 
     img = preprocess(img)
-    img = img.unsqueeze(0)
-
-    model = ResNet(50, 1000)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    img = img.unsqueeze(0).to(device)
+    model = ResNet(50, 1000) #our model
     model.load_from_pretrained()
     with torch.no_grad():
+        model.to(device)
         model.eval()
         logits = model(img)
     index = torch.argmax(F.softmax(logits, dim=-1))
