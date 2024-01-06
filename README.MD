@@ -13,3 +13,15 @@ PYTHONPATH="./" python3 test/mnist.py
 ```Python
 python3 playground/resnet.py <insert url here>
 ```
+
+### Well I got Transformers as well
+
+Trains GPT in addition dataset
+```Python
+python3 playground/topgpt/addition.py
+```
+
+Load pretrained OpenAI GPT2 (small and medium, minor changes for larger)
+```Python
+python3 playground/topgpt/gpt2.py
+```
