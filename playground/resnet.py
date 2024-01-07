@@ -124,9 +124,6 @@ class ResNet(nn.Module):
     
     def forward(self, x):
 
-        is_feature_only = self.fc is None
-        if is_feature_only: features = []
-
         print("Initially:", x.shape)
         out = self.relu(self.bn1(self.conv1(x)))
         out = self.maxpool(out)
@@ -134,24 +131,21 @@ class ResNet(nn.Module):
         print("---Features---")
         out = self.layer1(out)
         print("After block1 (stride 1 kernel):", out.shape)
-        if is_feature_only: features.append(out)
 
         out = self.layer2(out)
         print("After block2 (stride 2 kernel):", out.shape)
-        if is_feature_only: features.append(out)
 
         out = self.layer3(out)
         print("After block3 (stride 2 kernel):", out.shape)
-        if is_feature_only: features.append(out)
         
         out = self.layer4(out)
         print("After block4 (stride 2 kernel):", out.shape)
-        if is_feature_only: features.append(out)
         print("--------------")
 
         out = self.avgpool(out)
         out = torch.flatten(out, 1)
         out = self.fc(out)
+        print("After avg pooling, flatten and head:")
 
         return out
 
@@ -200,5 +194,4 @@ if __name__ == "__main__":
         labels = eval(f.read())
         cat = labels.get(index.item(), "Label not found")
         
-    print("After avg pooling and head:")
     print("The image is of", cat)
