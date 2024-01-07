@@ -182,18 +182,23 @@ if __name__ == "__main__":
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    img = preprocess(img)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    img = img.unsqueeze(0).to(device)
+
+    img = preprocess(img).unsqueeze(0).to(device)
+
     model = ResNet(50, 1000) #our model
     model.load_from_pretrained()
+
     with torch.no_grad():
         model.to(device)
         model.eval()
         logits = model(img)
+
     index = torch.argmax(F.softmax(logits, dim=-1))
 
     with open('./imagenet1000_clsidx_to_labels.txt') as f:
         labels = eval(f.read())
         cat = labels.get(index.item(), "Label not found")
+        
+    print("After avg pooling and head:")
     print("The image is of", cat)
