@@ -5,7 +5,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
  
     prompt = "The answer to life, universe and everything is"
-    model_type = 'gpt2-medium'
+    model_type = 'gpt2'
     
     model = Transformer.from_pretrained(model_type)
     model.to(device)

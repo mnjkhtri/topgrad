@@ -1,41 +1,54 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class NewGELU(nn.Module): #necessary
+    def forward(self, x):
+        return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
+
 class TransformerBlock(nn.Module):
     """
-    Sort of an autoencoder: [B, T<=ML, Emb --> B, T, Emb]. Supports both encoder and decoder blocks;
+    Sort of an autoencoder: [B, T<=ML, Emb --> B, T, Emb].
+    Equips cross-attention (decoder part)
     """
-    def __init__(self, max_length, embed_dim, ff_dim, num_heads, cross=True, prenorm=True, act=nn.GELU, dropout=0.1):
+    def __init__(self, max_length, embed_dim, ff_dim, num_heads, prenorm=True, act=NewGELU, dropout=0.1):
 
         super(TransformerBlock, self).__init__()
         assert embed_dim % num_heads == 0, "embed_dim must be divisble by num_heads"
 
+        self.max_length = max_length
         self.embed_dim = embed_dim
+        self.ff_dim = ff_dim
         self.num_heads = num_heads
-        self.cross = cross
         self.prenorm = prenorm
+        self.act = act
+        self.dp= dropout
 
-        self.head_size = embed_dim // num_heads
+        #derv:
+        self.head_size = self.embed_dim // self.num_heads
 
-        self.c_attn = nn.Linear(embed_dim, 3*embed_dim)
+        #attention blocks
+        self.c_attn = nn.Linear(self.embed_dim, 3*self.embed_dim)
+        self.register_buffer(
+            "mask", 
+            torch.tril(torch.ones(self.max_length, self.max_length))
+            .view(1, 1, self.max_length, self.max_length), persistent=False)
+        self.c_proj = nn.Linear(self.embed_dim, self.embed_dim)
 
-        if cross:
-            self.register_buffer("mask", torch.tril(torch.ones(max_length, max_length))
-                                        .view(1, 1, max_length, max_length), persistent=False)
-
-        self.c_proj = nn.Linear(embed_dim, embed_dim)
-
+        #feedforward blocks
         self.mlpf = nn.Sequential(
-            nn.Linear(embed_dim, ff_dim),
-            act(),
-            nn.Linear(ff_dim, embed_dim),
+            nn.Linear(self.embed_dim, self.ff_dim),
+            self.act(),
+            nn.Linear(self.ff_dim, self.embed_dim),
         )
+        
+        #after attn and ff blocks
+        self.dropout = nn.Dropout(self.dp) #applied to two places (effective during training only)
 
-        self.dropout = nn.Dropout(dropout, inplace=True)
-
-        self.ln1 = nn.LayerNorm(embed_dim)
-        self.ln2 = nn.LayerNorm(embed_dim)
+        #depends
+        self.ln1 = nn.LayerNorm(self.embed_dim)
+        self.ln2 = nn.LayerNorm(self.embed_dim)
 
     def attn(self, x):
 
@@ -47,43 +60,44 @@ class TransformerBlock(nn.Module):
         K = K.view(batch_size, -1, self.num_heads, self.head_size).permute(0, 2, 1, 3)
         V = V.view(batch_size, -1, self.num_heads, self.head_size).permute(0, 2, 1, 3)
 
-        att = torch.einsum('bhqd,bhkd->bhqk', [Q, K])/(self.head_size ** 0.5)
-        if self.cross:
-            att = att.masked_fill(self.mask[:,:,:seq_length,:seq_length] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
+        att = torch.einsum('bhqd,bhkd->bhqk', [Q, K])/(self.head_size ** 0.5) #scaled dot produt attention
+        att = att.masked_fill(self.mask[:,:,:seq_length,:seq_length] == 0, float('-inf'))
+        att = self.dropout(F.softmax(att, dim=-1)) #just after probabilities, why tho? (attn dropout)
 
+        #Attain to the probabilities
         out = torch.einsum('bhal,bhlv->bhav', [att, V]).permute(0,2,1,3).contiguous()
         out = out.view(batch_size, -1, self.num_heads * self.head_size)
-        out = self.dropout(self.c_proj(out))
+        out = self.dropout(self.c_proj(out)) #projection after attending to tokens (residue dropout)
         return out
     
     def forward(self, x):
 
         if self.prenorm:
-            x = x + self.dropout(self.attn(self.ln1(x)))
-            x = x + self.dropout(self.mlpf(self.ln2(x)))
+            x = x + self.attn(self.ln1(x))
+            x = x + self.mlpf(self.ln2(x))
         else:
-            x = self.ln1(x + self.dropout(self.attn(x)))
-            x = self.ln2(x + self.dropout(self.mlpf(x)))
+            x = self.ln1(x + self.attn(x))
+            x = self.ln2(x + self.mlpf(x))
         return x
     
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, max_length, embed_dim, ff_dim, num_heads, layers):
+    def __init__(self, vocab_size, max_length, embed_dim, ff_dim, num_heads, layers, emb_dropout=0.1):
 
         super(Transformer, self).__init__()
         self.max_length = max_length
 
         self.pos_embed = nn.Embedding(max_length, embed_dim)
-        self.tok_embed = nn.Embedding(vocab_size, embed_dim)
-        self.dropout = nn.Dropout(inplace=True)
         self.register_buffer("pos", torch.arange(max_length), persistent=False)
+        self.tok_embed = nn.Embedding(vocab_size, embed_dim)
+        self.dropout = nn.Dropout(emb_dropout)
+    
         self.tbs = nn.Sequential(*[TransformerBlock(max_length, embed_dim, ff_dim, num_heads) for _ in range(layers)])
         self.ln_f = nn.LayerNorm(embed_dim)
 
         self.lm_head = nn.Linear(embed_dim, vocab_size, bias=False)
 
-        self.apply(self._init_weight)
+        self.apply(self._init_weight) #initialization for training
 
     def _init_weight(self, module):
         if isinstance(module, nn.Linear):
@@ -99,6 +113,9 @@ class Transformer(nn.Module):
             torch.nn.init.ones_(module.weight)
 
     def configure_optimizers(self, lr):
+        """
+        Separate out parameters by their types for AdamW 
+        """
         decay = set()
         no_decay = set()
         whitelist_weight_modules = (torch.nn.Linear, )
