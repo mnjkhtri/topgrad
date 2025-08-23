@@ -1,0 +1,6 @@
+[project]
+name = "topgrad"
+version = "0.0.1"
+
+[tool.setuptools]
+packages = ["topgrad"]
