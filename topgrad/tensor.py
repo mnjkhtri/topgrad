@@ -1,5 +1,5 @@
-from functools import partialmethod
 import numpy as np
+
 
 class Tensor:
     def __init__(self, data):
@@ -9,143 +9,181 @@ class Tensor:
         self.data = data
         self.grad = None
 
-        self._ctx = None #The subclass Function object from which it originated; contains parents and saved_tensors; also forward and backward
+        self._op = None 
+        # It's a pointer to the Op object which is an operation that created this tensor.
+        # The Op instance contains information needed to compute gradients for that step during the backward pass
+        # Specifically it will contain:
+        # - __intermediate:
+        # - parents: A tuple containing reference to the input Tensor objects. This forms a compute graph
+        # If a tensor was created manually (not as the result of an op), its _op is None
+
+    @classmethod
+    def zeros(cls, *shape): return cls(np.zeros(shape, dtype=np.float32))
+
+    @classmethod
+    def ones(cls, *shape): return cls(np.ones(shape, dtype=np.float32))
+
+    @classmethod
+    def randn(cls, *shape): return cls(np.random.randn(*shape).astype(np.float32))
+
+    @classmethod
+    def He(cls, *shape, dist = "normal"):
+        assert len(shape) == 2, "He init is only for 2D tensors"
+        fan_in, _ = shape
+        if dist == "normal":
+            std_dev = np.sqrt(2.0 / fan_in)
+            return cls((np.random.randn(*shape) * std_dev).astype(np.float32))
+        elif dist == "uniform":
+            upper = np.sqrt(6.0 / fan_in)
+            return cls(np.random.uniform(-upper, upper, size=shape).astype(np.float32))
+        pass
+
+    @classmethod
+    def Xavier(cls, *shape, dist = "normal"):
+        assert len(shape) == 2, "Xavier init is only for 2D tensors"
+        fan_in, fan_out = shape
+        if dist == "normal":
+            std_dev = np.sqrt(2.0 / (fan_in + fan_out))
+            return cls((np.random.randn(*shape) * std_dev).astype(np.float32))
+        elif dist == "uniform":
+            upper = np.sqrt(6.0 / (fan_in + fan_out))
+            return cls(np.random.uniform(-upper, upper, size=shape).astype(np.float32))
+        pass
 
     def __repr__(self):
         return f"Tensor {self.data} with grad {self.grad}"
     
     def backward(self, allow_fill=True):
-        #Checks if there is a context associated with the current tensor, if not, it means this means tensor is not part of a computation that requires backprop
-        if self._ctx is None:
+        
+        # Base condition: If the tensor has no op, it means it's an original input. So we cant propagate any further back from it. The recursion stops here.
+        if self._op is None:
             return
 
-        #If conditions are met, it assumes that the tensor is a scalar and fills its graident with ones 
-        if self.grad is None and allow_fill:
+        # Init gradient: The backward pass starts from the final tensor. The gradient of a variable with respect to itself is 1.
+        # This section initializes the final tensor's gradient to an array of ones.
+        if (self.grad is None) and allow_fill:
             assert self.data.size == 1
             self.grad = np.ones_like(self.data)
 
         assert(self.grad is not None) #if not leaf tensors, must have gradient
 
-        grads = self._ctx.backward(self._ctx, self.grad)
-        if len(self._ctx.parents) == 1:
-            grads = [grads]
+        grads = self._op.backward(self.grad)
+        # It calls the backward method of the op that created this tensor. It passes the current tensor's incoming gradient (self.grad) to that function.
+        # The op's job is to use this incoming gradient to compute the local gradients with respect to its own input.
+        # The grads variable will contain the result of back calculation. It must be a TUPLE OF GRADIENTS
+        # The op just calculates the gradients. Distribution happens here.
 
-        for t, g in zip(self._ctx.parents, grads):
-            if g.shape != t.data.shape:
-                print(f"grad shape must match tensor shape in {self._ctx}, {g.shape}, {t.data.shape}")
-                assert(False)
-            t.grad = g
+        for t, g in zip(self._op.parents, grads):
+            assert g.shape == t.data.shape,f"grad shape must match tensor shape {g.shape}, {t.data.shape}"
+            if t.grad is None:
+               t.grad = g
+            else:
+               t.grad += g
             t.backward(False)
 
-    def mean(self):
-      div = Tensor(np.array([1/self.data.size]))
-      return self.sum().mul(div)
+    # foundational ops:
+    def sum(self): return Sum.apply(self)
+    def add(self, x): return Add.apply(self, x)
+    def mul(self, x): return Mul.apply(self, x)
+    def dot(self, w): return Dot.apply(self, w)
 
-# An instantiation of the Function is the context
-class Function:
+    # nn ops:
+    def relu(self): return ReLU.apply(self)
+    def linear(self, w, b): return Linear.apply(self, w, b)
+    def logsoftmax(self): return LogSoftmax.apply(self)
+
+
+
+class Op:
     def __init__(self, *tensors):
-        self.parents = tensors #tensor
-        self.saved_tensors = [] #ndarrays
+        self.parents = tensors
+        self._intermediate = [] # save intermediate values as ndarrays
 
     def save_for_backward(self, *x):
-        self.saved_tensors.extend(x)
+        self._intermediate.extend(x)
 
-    @staticmethod
-    def apply(self, fxn, *x): #attach to Tensor object with appropriate fxn object
-        x = (self,)+x
-        ctx = fxn(*x)
-        ret = Tensor(fxn.forward(ctx, *[t.data for t in x]))
-        ret._ctx = ctx
+    def forward(self, *args, **kwargs):
+        raise NotImplementedError
+        # Computes the output value for the Op and also responsible for saving any intermediate values needed for backward pass
+
+    def backward(self, *args, **kwargs):
+        raise NotImplementedError
+        # Calculates the gradients for that specific operation by applying chain rule. Utilizes upstream gradient and intermediates
+        # The blame for the parents for erring childs. Haha a chain rule joke
+
+    @classmethod
+    def apply(cls, *args):
+        # Connects the Tneosr objects with the internal world of numpy calculations. Instantiates the class and does necessary soup.
+        op = cls(*args)
+        result = op.forward(*[t.data for t in args])
+        ret = Tensor(result)
+        ret._op = op
         return ret
 
-#attach apply method of Function to the Tensor class under the given name:
-def register(name, fxn):
-    setattr(Tensor, name, partialmethod(fxn.apply, fxn))
+# Test ops:
 
-""" 
-tensor.<name>(*args) actually calls with tuple of (self, args)
+class Sum(Op):
+    def forward(self, x):
+        self.save_for_backward(x.shape)
+        return np.array(x.sum())
+    def backward(self, grad):
+        x_shape, = self._intermediate
+        return [grad * np.ones(x_shape)]
 
-so in forward() except whatever arguments as ndarrays
-"""
+class Add(Op):
+    def forward(self, x, y):
+        return x + y
+    def backward(self, grad):
+        return [grad, grad]
 
-#Unaries:
-
-class Sum(Function):
-  @staticmethod
-  def forward(ctx, input):
-    ctx.save_for_backward(input)
-    return np.array([input.sum()]) #not as a scalar;
-
-  @staticmethod
-  def backward(ctx, grad_output):
-    input, = ctx.saved_tensors
-    return grad_output * np.ones_like(input)
-register('sum', Sum)
-
-class ReLU(Function):
-  @staticmethod
-  def forward(ctx, input):
-    ctx.save_for_backward(input)
-    return np.maximum(input, 0)
-
-  @staticmethod
-  def backward(ctx, grad_output):
-    input, = ctx.saved_tensors
-    grad_input = grad_output.copy()
-    grad_input[input < 0] = 0
-    return grad_input
-register('relu', ReLU)
-
-class LogSoftmax(Function):
-  @staticmethod
-  def forward(ctx, input):
-    def logsumexp(x):
-      c = x.max(axis=1)
-      return c + np.log(np.exp(x-c.reshape((-1, 1))).sum(axis=1))
-    output = input - logsumexp(input).reshape((-1, 1))
-    ctx.save_for_backward(output)
-    return output
-
-  @staticmethod
-  def backward(ctx, grad_output):
-    output, = ctx.saved_tensors
-    return grad_output - np.exp(output)*grad_output.sum(axis=1).reshape((-1, 1))
-register('logsoftmax', LogSoftmax)
-
-#Binaries:
-
-class Add(Function):
-  @staticmethod
-  def forward(ctx, x, y):
-    return x + y
+class Mul(Op):
+    def forward(self, x, y):
+      self.save_for_backward(x, y)
+      return x * y
+    def backward(self, grad):
+      x, y = self._intermediate
+      return [grad * y, grad * x]
     
-  @staticmethod
-  def backward(ctx, grad_output):
-    return grad_output, grad_output
-register('add', Add)
+# NN ops:
 
-class Mul(Function):
-  @staticmethod
-  def forward(ctx, x, y):
-    ctx.save_for_backward(x, y)
-    return x*y
+class LogSoftmax(Op):
+    # assume axis = -1
+    def forward(self, x):
+        axis = -1
+        max_x = x.max(axis=axis, keepdims=True)
+        log_sum_exp = max_x + np.log(np.exp(x - max_x).sum(axis=axis, keepdims=True))
+        y = x - log_sum_exp
+        self.save_for_backward(y)
+        return y
+    def backward(self, grad):
+        axis = -1
+        y, = self._intermediate
+        softmax_y = np.exp(y)
+        sum_grad = grad.sum(axis=axis, keepdims=True)
+        grad_x = grad - softmax_y * sum_grad
+        return [grad_x]
 
-  @staticmethod
-  def backward(ctx, grad_output):
-    x,y = ctx.saved_tensors
-    return y*grad_output, x*grad_output
-register('mul', Mul)
+class ReLU(Op):
+    def forward(self, x):
+        self.save_for_backward(x)
+        return np.maximum(x, 0)
+    def backward(self, grad):
+        x, = self._intermediate
+        grad_copy = grad.copy(); grad_copy[x < 0] = 0; return [grad_copy]
 
-class Dot(Function):
-  @staticmethod
-  def forward(ctx, input, weight):
-    ctx.save_for_backward(input, weight)
-    return np.dot(input, weight)
-
-  @staticmethod
-  def backward(ctx, grad_output):
-    input, weight = ctx.saved_tensors
-    grad_input = grad_output.dot(weight.T)
-    grad_weight = input.T.dot(grad_output)
-    return grad_input, grad_weight
-register('dot', Dot)
+class Linear(Op):
+    def forward(self, x, w, b):
+        self.save_for_backward(x, w)
+        # Perform the linear transformation: y = xw + b
+        return np.dot(x, w) + b
+    def backward(self, grad):
+        x, w = self._intermediate
+        in_features = w.shape[0]
+        out_features = w.shape[1]
+        grad_x = grad.dot(w.T)
+        x_reshaped = x.reshape(-1, in_features)
+        grad_reshaped = grad.reshape(-1, out_features)
+        grad_w = x_reshaped.T.dot(grad_reshaped)
+        axes_to_sum = tuple(range(grad.ndim - 1))
+        grad_b = np.sum(grad, axis=axes_to_sum) if axes_to_sum else grad
+        return [grad_x, grad_w, grad_b]
