@@ -17,29 +17,35 @@ def fetch_mnist(url='http://yann.lecun.com/exdb/mnist/'):
 url = 'https://ossci-datasets.s3.amazonaws.com/mnist/'
 files = ['train-images-idx3-ubyte.gz', 'train-labels-idx1-ubyte.gz', 't10k-images-idx3-ubyte.gz', 't10k-labels-idx1-ubyte.gz']
 
-X_train = fetch_mnist(url+files[0])[0x10:].reshape((-1, 784)) / 255.0
+X_train = fetch_mnist(url+files[0])[0x10:].reshape((-1, 28, 28, 1)) / 255.0
 Y_train = fetch_mnist(url+files[1])[8:]
-X_valid = fetch_mnist(url+files[2])[0x10:].reshape((-1, 784)) / 255.0
+X_valid = fetch_mnist(url+files[2])[0x10:].reshape((-1, 28, 28, 1)) / 255.0
 Y_valid = fetch_mnist(url+files[3])[8:]
 
 # print(X_train.shape, Y_train.shape, X_valid.shape, Y_valid.shape)
+# (60000, 28, 28, 1) (60000,) (10000, 28, 28, 1) (10000,)
 
 class TopNet:
     def __init__(self):
-        self.l1, self.b1 = Tensor.He(784, 128), Tensor.zeros(128)
-        self.l2, self.b2 = Tensor.He(128, 10), Tensor.zeros(10)
+        self.k1, self.b1 = Tensor.He(4, 4, 1, 8), Tensor.zeros(8)
+        self.k2, self.b2 = Tensor.He(4, 4, 8, 16), Tensor.zeros(16)
+        self.l3, self.b3 = Tensor.He(784, 10), Tensor.zeros(10)
 
     def forward(self, x):
+        # (B, 28, 28, 1)
+        x = x.conv(self.k1, self.b1, (2, 2), (1, 1)).relu()
+        # (B, 14, 14, 8)
+        x = x.conv(self.k2, self.b2, (2, 2), (1, 1)).relu()
+        # (B, 7, 7, 16)
+        x = x.reshape((x.shape[0], 784))
         # (B, 784)
-        x = x.linear(self.l1, self.b1).relu()
-        # (B, 128)
-        x = x.linear(self.l2, self.b2)
+        x = x.linear(self.l3, self.b3)
         # (B, 10)
         return x
     
 BATCH_SIZE = 256
 model = TopNet()
-optim = SGD([model.l1, model.b1, model.l2, model.b2], lr=0.001)
+optim = SGD([model.k1, model.b1, model.k2, model.b2, model.l3, model.b3], lr=0.001)
 
 i = 0
 try:
@@ -47,7 +53,7 @@ try:
     while True:
         samp = np.random.randint(0, X_train.shape[0], size=(BATCH_SIZE))
         x = Tensor(X_train[samp])
-        y_labels = Y_train[samp]
+        y_labels =  Y_train[samp]
         y_np = np.zeros((BATCH_SIZE, 10), np.float32)
         y_np[range(BATCH_SIZE), y_labels] = -1 # (negation)
         y_probs = Tensor(y_np)
@@ -64,7 +70,7 @@ try:
 except KeyboardInterrupt:
     print("\n\nTraining interrupted by user. Running final evaluation...")
 
-log_probs = model.forward(Tensor(X_valid.reshape((-1, 28*28)))).logsoftmax()
+log_probs = model.forward(Tensor(X_valid)).logsoftmax()
 y_preds = np.argmax(log_probs.data, axis=1) # no need to find actually probablity just do argmax
 eval_accuracy = (Y_valid == y_preds).mean()
 print("final test set accuracy is", eval_accuracy)
