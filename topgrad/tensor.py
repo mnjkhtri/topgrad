@@ -1,6 +1,16 @@
 import numpy as np
 
+class Engine:
+    training = True   # default
 
+    @classmethod
+    def train(cls):
+        cls.training = True
+
+    @classmethod
+    def eval(cls):
+        cls.training = False
+        
 class Tensor:
     def __init__(self, data):
         if not isinstance(data, np.ndarray):
@@ -17,6 +27,9 @@ class Tensor:
         # - parents: A tuple containing reference to the input Tensor objects. This forms a compute graph
         # If a tensor was created manually (not as the result of an op), its _op is None
 
+    @property
+    def shape(self): return self.data.shape
+
     @classmethod
     def zeros(cls, *shape): return cls(np.zeros(shape, dtype=np.float32))
 
@@ -28,8 +41,7 @@ class Tensor:
 
     @classmethod
     def He(cls, *shape, dist = "normal"):
-        assert len(shape) == 2, "He init is only for 2D tensors"
-        fan_in, _ = shape
+        fan_in, _ = (int(np.prod(shape[:-2])) * shape[-2], int(np.prod(shape[:-2])) * shape[-1]) if len(shape) > 1 else (shape[0], shape[0])
         if dist == "normal":
             std_dev = np.sqrt(2.0 / fan_in)
             return cls((np.random.randn(*shape) * std_dev).astype(np.float32))
@@ -40,8 +52,7 @@ class Tensor:
 
     @classmethod
     def Xavier(cls, *shape, dist = "normal"):
-        assert len(shape) == 2, "Xavier init is only for 2D tensors"
-        fan_in, fan_out = shape
+        fan_in, fan_out = (int(np.prod(shape[:-2])) * shape[-2], int(np.prod(shape[:-2])) * shape[-1]) if len(shape) > 1 else (shape[0], shape[0])
         if dist == "normal":
             std_dev = np.sqrt(2.0 / (fan_in + fan_out))
             return cls((np.random.randn(*shape) * std_dev).astype(np.float32))
@@ -85,12 +96,13 @@ class Tensor:
     def sum(self): return Sum.apply(self)
     def add(self, x): return Add.apply(self, x)
     def mul(self, x): return Mul.apply(self, x)
-    def dot(self, w): return Dot.apply(self, w)
 
     # nn ops:
+    def reshape(self, ns): return Reshape.apply(self, ns)
+    def logsoftmax(self): return LogSoftmax.apply(self)
     def relu(self): return ReLU.apply(self)
     def linear(self, w, b): return Linear.apply(self, w, b)
-    def logsoftmax(self): return LogSoftmax.apply(self)
+    def conv(self, w, b, stride, padding): return Conv.apply(self, w, b, stride, padding)
 
 
 
@@ -114,9 +126,13 @@ class Op:
     @classmethod
     def apply(cls, *args):
         # Connects the Tneosr objects with the internal world of numpy calculations. Instantiates the class and does necessary soup.
-        op = cls(*args)
-        result = op.forward(*[t.data for t in args])
-        ret = Tensor(result)
+        # Only tensors are graph parents
+        parents = tuple(a for a in args if isinstance(a, Tensor))
+        op = cls(*parents)
+        # Forward sees raw numpy arrays for tensors, raw values otherwise
+        fwd_args = [a.data if isinstance(a, Tensor) else a for a in args]
+        out = op.forward(*fwd_args)
+        ret = Tensor(out)
         ret._op = op
         return ret
 
@@ -145,6 +161,13 @@ class Mul(Op):
       return [grad * y, grad * x]
     
 # NN ops:
+class Reshape(Op):
+    def forward(self, x, ns):
+        self.save_for_backward(x.shape, ns)
+        return x.reshape(ns)
+    def backward(self, grad):
+        os, _ = self._intermediate
+        return [grad.reshape(os)]
 
 class LogSoftmax(Op):
     # assume axis = -1
@@ -173,17 +196,127 @@ class ReLU(Op):
 
 class Linear(Op):
     def forward(self, x, w, b):
+        """
+        x: (..., in_features)
+        w: (in_features, out_features)
+        b: (out_features,)
+        """
         self.save_for_backward(x, w)
-        # Perform the linear transformation: y = xw + b
         return np.dot(x, w) + b
     def backward(self, grad):
+        """
+        grad: (..., out_features)
+        """
         x, w = self._intermediate
-        in_features = w.shape[0]
-        out_features = w.shape[1]
+        in_features, out_features = w.shape[0], w.shape[1]
         grad_x = grad.dot(w.T)
-        x_reshaped = x.reshape(-1, in_features)
-        grad_reshaped = grad.reshape(-1, out_features)
-        grad_w = x_reshaped.T.dot(grad_reshaped)
-        axes_to_sum = tuple(range(grad.ndim - 1))
-        grad_b = np.sum(grad, axis=axes_to_sum) if axes_to_sum else grad
+        grad_w = x.reshape(-1, in_features).T.dot(grad.reshape(-1, out_features))
+        grad_b = grad.reshape(-1, grad.shape[-1]).sum(axis=0)
         return [grad_x, grad_w, grad_b]
+
+class Conv(Op):
+    """
+    note: To downsample by stride S while keeping output ≈ input / S, use padding = (kernel_size - stride) / 2 per side. Thanks.
+    """
+    @staticmethod
+    def _im2col(x, KH, KW, stride, pad):
+        """
+        x: (N, H, W, C)
+        returns:
+          x_col: (N*H_out*W_out, KH*KW*C)
+          cache: shapes needed for backward
+        """
+        N, H, W, C = x.shape
+        sh, sw = stride
+        ph, pw = pad
+
+        H_out = (H + 2*ph - KH) // sh + 1
+        W_out = (W + 2*pw - KW) // sw + 1
+
+        # zero-pad on H and W
+        x_p = np.pad(x, ((0,0), (ph,ph), (pw,pw), (0,0)), mode='constant')
+
+        x_col = np.empty((N, H_out, W_out, KH, KW, C), dtype=x.dtype)
+        for i in range(KH):
+            i_max = i + sh*H_out
+            for j in range(KW):
+                j_max = j + sw*W_out
+                x_col[:, :, :, i, j, :] = x_p[:, i:i_max:sh, j:j_max:sw, :]
+
+        x_col = x_col.reshape(N*H_out*W_out, KH*KW*C)
+        cache = (x.shape, (KH, KW, C), (H_out, W_out), stride, pad)
+        return x_col, cache
+    
+    @staticmethod
+    def _col2im(col, cache):
+        """
+        Reverse of im2col to reconstruct gradient wrt input.
+        col: (N*H_out*W_out, KH*KW*C)
+        """
+        (N, H, W, C), (KH, KW, _), (H_out, W_out), stride, pad = cache
+        sh, sw = stride
+        ph, pw = pad
+
+        col = col.reshape(N, H_out, W_out, KH, KW, C)
+
+        dx_p = np.zeros((N, H + 2*ph, W + 2*pw, C), dtype=col.dtype)
+        for i in range(KH):
+            i_max = i + sh*H_out
+            for j in range(KW):
+                j_max = j + sw*W_out
+                dx_p[:, i:i_max:sh, j:j_max:sw, :] += col[:, :, :, i, j, :]
+
+        # crop padding
+        if ph == 0 and pw == 0:
+            return dx_p
+        return dx_p[:, ph:ph+H, pw:pw+W, :]
+
+    def forward(self, x, w, b, stride, padding):
+        """
+        x: (N, H, W, Cin)
+        w: (KH, KW, Cin, Cout)
+        b: (Cout,)
+        """
+        KH, KW, Cin, Cout = w.shape
+        x_col, im2col_cache = self._im2col(x, KH, KW, stride, padding)
+        W_col = w.reshape(KH*KW*Cin, Cout)           # (K, Cout)
+        out_cols = x_col @ W_col                     # (N*H_out*W_out, Cout)
+        out_cols += b                                # broadcast add bias
+        # restore to NHWC
+        N, H, W, _ = x.shape
+        ph, pw = padding
+        sh, sw = stride
+        H_out = (H + 2*ph - KH)//sh + 1
+        W_out = (W + 2*pw - KW)//sw + 1
+        out = out_cols.reshape(N, H_out, W_out, Cout)
+
+        # save for backward
+        self.save_for_backward(x_col, w, im2col_cache)
+        return out
+    
+    def backward(self, grad):
+        """
+        grad: (N, H_out, W_out, Cout)
+        """
+        (x_col, w, im2col_cache) = self._intermediate
+        KH, KW, Cin, Cout = w.shape
+
+        # flatten grad over spatial positions
+        N, H_out, W_out, Cout_check = grad.shape
+        assert Cout_check == Cout
+        grad_col = grad.reshape(N*H_out*W_out, Cout)    # (NHW, Cout)
+
+        # dW = x_col^T @ grad_col
+        dw_col = x_col.T @ grad_col                      # (K, Cout)
+        dw = dw_col.reshape(KH, KW, Cin, Cout)
+
+        # dB
+        db = grad_col.sum(axis=0)                        # (Cout,)
+
+        # dX via col2im: (NHW, K) = grad_col @ W_col^T
+        W_col = w.reshape(KH*KW*Cin, Cout)               # (K, Cout)
+        dcols = grad_col @ W_col.T                       # (NHW, K)
+        dx = self._col2im(dcols, im2col_cache)           # (N, H, W, Cin)
+
+        return [dx, dw, db]
+    
