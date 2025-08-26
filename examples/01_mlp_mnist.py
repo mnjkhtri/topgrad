@@ -1,30 +1,13 @@
 import numpy as np
-from tqdm import tqdm
-import requests, gzip, os, hashlib
 from topgrad.tensor import Tensor
 from topgrad.optim import SGD
+from .utils import mnist
 
-def fetch_mnist(url='http://yann.lecun.com/exdb/mnist/'):
-    fp = os.path.join("/tmp", hashlib.md5(url.encode('utf-8')).hexdigest())
-    
-    if os.path.isfile(fp):
-        with open(fp, "rb") as f: dat = f.read()
-    else:
-        with open(fp, "wb") as f: dat = requests.get(url).content; f.write(dat)
+X_train, Y_train, X_valid, Y_valid = mnist()
+X_train = X_train.reshape(-1, 784) / 255.0
+X_valid = X_valid.reshape(-1, 784) / 255.0
 
-    return np.frombuffer(gzip.decompress(dat), dtype=np.uint8).copy()
-  
-url = 'https://ossci-datasets.s3.amazonaws.com/mnist/'
-files = ['train-images-idx3-ubyte.gz', 'train-labels-idx1-ubyte.gz', 't10k-images-idx3-ubyte.gz', 't10k-labels-idx1-ubyte.gz']
-
-X_train = fetch_mnist(url+files[0])[0x10:].reshape((-1, 784)) / 255.0
-Y_train = fetch_mnist(url+files[1])[8:]
-X_valid = fetch_mnist(url+files[2])[0x10:].reshape((-1, 784)) / 255.0
-Y_valid = fetch_mnist(url+files[3])[8:]
-
-# print(X_train.shape, Y_train.shape, X_valid.shape, Y_valid.shape)
-
-class TopNet:
+class TopMLPNet:
     def __init__(self):
         self.l1, self.b1 = Tensor.He(784, 128), Tensor.zeros(128)
         self.l2, self.b2 = Tensor.He(128, 10), Tensor.zeros(10)
@@ -38,7 +21,7 @@ class TopNet:
         return x
     
 BATCH_SIZE = 256
-model = TopNet()
+model = TopMLPNet()
 optim = SGD([model.l1, model.b1, model.l2, model.b2], lr=0.001)
 
 i = 0
@@ -64,7 +47,7 @@ try:
 except KeyboardInterrupt:
     print("\n\nTraining interrupted by user. Running final evaluation...")
 
-log_probs = model.forward(Tensor(X_valid.reshape((-1, 28*28)))).logsoftmax()
+log_probs = model.forward(Tensor(X_valid)).logsoftmax()
 y_preds = np.argmax(log_probs.data, axis=1) # no need to find actually probablity just do argmax
 eval_accuracy = (Y_valid == y_preds).mean()
 print("final test set accuracy is", eval_accuracy)

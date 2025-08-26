@@ -1,15 +1,4 @@
 import numpy as np
-
-class Engine:
-    training = True   # default
-
-    @classmethod
-    def train(cls):
-        cls.training = True
-
-    @classmethod
-    def eval(cls):
-        cls.training = False
         
 class Tensor:
     def __init__(self, data):
@@ -101,8 +90,9 @@ class Tensor:
     def reshape(self, ns): return Reshape.apply(self, ns)
     def logsoftmax(self): return LogSoftmax.apply(self)
     def relu(self): return ReLU.apply(self)
-    def linear(self, w, b): return Linear.apply(self, w, b)
-    def conv(self, w, b, stride, padding): return Conv.apply(self, w, b, stride, padding)
+    def linear(self, w_t, b_t): return Linear.apply(self, w_t, b_t)
+    def conv(self, w_t, b_t, stride, padding): return Conv.apply(self, w_t, b_t, stride, padding)
+    def batchnorm(self, gamma_t, beta_t, state, eps=1e-5, momentum=0.1, mode='T'): return BatchNorm.apply(self, gamma_t, beta_t, state, eps, momentum, mode)
 
 
 
@@ -146,12 +136,6 @@ class Sum(Op):
         x_shape, = self._intermediate
         return [grad * np.ones(x_shape)]
 
-class Add(Op):
-    def forward(self, x, y):
-        return x + y
-    def backward(self, grad):
-        return [grad, grad]
-
 class Mul(Op):
     def forward(self, x, y):
       self.save_for_backward(x, y)
@@ -161,14 +145,6 @@ class Mul(Op):
       return [grad * y, grad * x]
     
 # NN ops:
-class Reshape(Op):
-    def forward(self, x, ns):
-        self.save_for_backward(x.shape, ns)
-        return x.reshape(ns)
-    def backward(self, grad):
-        os, _ = self._intermediate
-        return [grad.reshape(os)]
-
 class LogSoftmax(Op):
     # assume axis = -1
     def forward(self, x):
@@ -211,12 +187,22 @@ class Linear(Op):
         in_features, out_features = w.shape[0], w.shape[1]
         grad_x = grad.dot(w.T)
         grad_w = x.reshape(-1, in_features).T.dot(grad.reshape(-1, out_features))
-        grad_b = grad.reshape(-1, grad.shape[-1]).sum(axis=0)
+        grad_b = grad.reshape(-1, grad.shape[-1]).sum(axis=0) # maybe use ndim here?
         return [grad_x, grad_w, grad_b]
+
+class Reshape(Op):
+    def forward(self, x, ns):
+        self.save_for_backward(x.shape, ns)
+        return x.reshape(ns)
+    def backward(self, grad):
+        os, _ = self._intermediate
+        return [grad.reshape(os)]
 
 class Conv(Op):
     """
-    note: To downsample by stride S while keeping output ≈ input / S, use padding = (kernel_size - stride) / 2 per side. Thanks.
+    common use cases:
+        - 3x3 kernel, pad=1, 1x1 kernel, pad=0
+        - new shape = ceil (old shape / stride)
     """
     @staticmethod
     def _im2col(x, KH, KW, stride, pad):
@@ -302,8 +288,7 @@ class Conv(Op):
         KH, KW, Cin, Cout = w.shape
 
         # flatten grad over spatial positions
-        N, H_out, W_out, Cout_check = grad.shape
-        assert Cout_check == Cout
+        N, H_out, W_out, _ = grad.shape
         grad_col = grad.reshape(N*H_out*W_out, Cout)    # (NHW, Cout)
 
         # dW = x_col^T @ grad_col
@@ -320,3 +305,48 @@ class Conv(Op):
 
         return [dx, dw, db]
     
+class BatchNorm(Op):
+    def forward(self, x, gamma, beta, state, eps=1e-5, momentum=0.1, mode='T'):
+        """
+        x:     (..., C), ndim >= 2
+        gamma: (C,)
+        beta:  (C,)
+        state.running_mean: (C,)
+        state.running_var:  (C,)
+        """
+        assert mode in {"T", "E"}, "BatchNorm model can only be either train or eval."
+        x_flat = x.reshape(-1, x.shape[-1])             # (*, C)
+        if mode == 'T':
+            mean = x_flat.mean(axis=0)                  # (C,)
+            var  = x_flat.var (axis=0)                  # (C,)
+            state.running_mean = (1 - momentum) * state.running_mean + momentum * mean
+            state.running_var  = (1 - momentum) * state.running_var  + momentum * var
+        elif mode == 'E':
+            mean = state.running_mean                   # (C,)
+            var  = state.running_var                    # (C,)
+        pass
+        inv_std = 1.0 / np.sqrt(var + eps)              # (C,)
+        x_hat_flat = (x_flat - mean) * inv_std          # (*, C)
+        y_flat = gamma * x_hat_flat + beta              # (*, C)
+        y = y_flat.reshape(x.shape)                     # (..., C)
+        self.save_for_backward(x_hat_flat, inv_std, gamma, x.shape, mode)
+        return y
+    
+    def backward(self, grad):
+        x_hat_flat, inv_std, gamma, os, mode = self._intermediate
+        grad_flat = grad.reshape(-1, os[-1])                    # (*, C)
+        g_hat = gamma * grad_flat                               # (*, C)
+        m1 = g_hat.mean(axis=0, keepdims=True)                  # mean(g_hat)       (1, C)
+        m2 = (g_hat * x_hat_flat).mean(axis=0, keepdims=True)   # mean(g_hat*x_hat) (1, C)
+        glocal = inv_std * g_hat
+        mean_correction = inv_std * m1 if mode == 'T' else 0.0                      # (1, C)
+        var_correction = inv_std * m2 * x_hat_flat if mode == 'T' else 0.0          # (1, C)
+        dx_flat = glocal - mean_correction - var_correction                         # (N, C)
+        return [dx_flat.reshape(os), (grad_flat * x_hat_flat).sum(axis=0), grad_flat.sum(axis=0)]
+    
+class Add(Op):
+    # needed for resnet
+    def forward(self, x, y):
+        return x + y
+    def backward(self, grad):
+        return [grad, grad]

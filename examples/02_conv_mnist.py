@@ -1,35 +1,22 @@
 import numpy as np
-from tqdm import tqdm
-import requests, gzip, os, hashlib
 from topgrad.tensor import Tensor
 from topgrad.optim import SGD
+from .utils import mnist
 
-def fetch_mnist(url='http://yann.lecun.com/exdb/mnist/'):
-    fp = os.path.join("/tmp", hashlib.md5(url.encode('utf-8')).hexdigest())
-    
-    if os.path.isfile(fp):
-        with open(fp, "rb") as f: dat = f.read()
-    else:
-        with open(fp, "wb") as f: dat = requests.get(url).content; f.write(dat)
+X_train, Y_train, X_valid, Y_valid = mnist()
+X_train = X_train.reshape(-1, 28, 28, 1) / 255.0
+X_valid = X_valid.reshape(-1, 28, 28, 1) / 255.0
 
-    return np.frombuffer(gzip.decompress(dat), dtype=np.uint8).copy()
-  
-url = 'https://ossci-datasets.s3.amazonaws.com/mnist/'
-files = ['train-images-idx3-ubyte.gz', 'train-labels-idx1-ubyte.gz', 't10k-images-idx3-ubyte.gz', 't10k-labels-idx1-ubyte.gz']
-
-X_train = fetch_mnist(url+files[0])[0x10:].reshape((-1, 28, 28, 1)) / 255.0
-Y_train = fetch_mnist(url+files[1])[8:]
-X_valid = fetch_mnist(url+files[2])[0x10:].reshape((-1, 28, 28, 1)) / 255.0
-Y_valid = fetch_mnist(url+files[3])[8:]
-
-# print(X_train.shape, Y_train.shape, X_valid.shape, Y_valid.shape)
-# (60000, 28, 28, 1) (60000,) (10000, 28, 28, 1) (10000,)
-
-class TopNet:
+class TopConvNet:
     def __init__(self):
-        self.k1, self.b1 = Tensor.He(4, 4, 1, 8), Tensor.zeros(8)
-        self.k2, self.b2 = Tensor.He(4, 4, 8, 16), Tensor.zeros(16)
+        # (B, 28, 28, 1)
+        self.k1, self.b1 = Tensor.He(3, 3, 1, 8),  Tensor.zeros(8)
+        # (B, 14, 14, 8)
+        self.k2, self.b2 = Tensor.He(3, 3, 8, 16), Tensor.zeros(16)
+        # (B, 7, 7, 16)
+        # (B, 784)
         self.l3, self.b3 = Tensor.He(784, 10), Tensor.zeros(10)
+        # (B, 10)
 
     def forward(self, x):
         # (B, 28, 28, 1)
@@ -44,7 +31,7 @@ class TopNet:
         return x
     
 BATCH_SIZE = 256
-model = TopNet()
+model = TopConvNet()
 optim = SGD([model.k1, model.b1, model.k2, model.b2, model.l3, model.b3], lr=0.001)
 
 i = 0
