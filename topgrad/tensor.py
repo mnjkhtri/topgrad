@@ -93,6 +93,7 @@ class Tensor:
     def linear(self, w_t, b_t): return Linear.apply(self, w_t, b_t)
     def conv(self, w_t, b_t, stride, padding): return Conv.apply(self, w_t, b_t, stride, padding)
     def batchnorm(self, gamma_t, beta_t, state, eps=1e-5, momentum=0.1, mode='T'): return BatchNorm.apply(self, gamma_t, beta_t, state, eps, momentum, mode)
+    def attention(self, wq_t, wk_t, wv_t): return Attention.apply(self, wq_t, wk_t, wv_t)
 
 
 
@@ -350,3 +351,40 @@ class Add(Op):
         return x + y
     def backward(self, grad):
         return [grad, grad]
+    
+class Attention(Op):
+    """
+    resnet friendly, minimal weights
+    x   : (B, T, D)
+    Wq  : (D, D)
+    Wk  : (D, D)
+    Wv  : (D, D)
+    """
+    def forward(self, x, wq, wk, wv):
+        Q = x @ wq                      # (B, T, D)
+        K = x @ wk                      # (B, T, D)
+        V = x @ wv                      # (B, T, D)
+        W_scores = np.matmul(Q, np.swapaxes(K, 1, 2)) / np.sqrt(Q.shape[-1])            # (B, T, T)
+        W_exp_scores = np.exp(W_scores - W_scores.max(axis=-1, keepdims=True))
+        W_attn = W_exp_scores / W_exp_scores.sum(axis=-1, keepdims=True)                # (B, T, T)
+        Y = np.matmul(W_attn, V)                                                        # (B, T, D)
+        self.save_for_backward(x, wq, wk, wv, Q, K, V, W_attn)
+        return Y
+
+    def backward(self, grad):
+        x, wq, wk, wv, Q, K, V, W_attn = self._intermediate
+        B, T, D  = x.shape
+        dV = np.matmul(np.swapaxes(W_attn, 1, 2), grad)                                                     # (B, T, D)
+        dW_attn = np.matmul(grad, np.swapaxes(V, 1, 2))                                                     # (B, T, T)
+        dW_scores = (dW_attn - (dW_attn * W_attn).sum(axis=-1, keepdims=True)) * W_attn / np.sqrt(D)        # (B, T, T)
+        dQ = np.matmul(dW_scores, K)                                                                        # (B, T, D)
+        dK = np.matmul(np.swapaxes(dW_scores, 1, 2), Q)                                                     # (B, T, D)
+        dx_q = dQ @ wq.T                                                # (B, T, D)
+        dx_k = dK @ wk.T                                                # (B, T, D)
+        dx_v = dV @ wv.T                                                # (B, T, D)
+        dx   = dx_q + dx_k + dx_v
+        x2   = x.reshape(-1, D)
+        dwq = x2.T @ dQ.reshape(-1, D)                                  # (D, D)
+        dwk = x2.T @ dK.reshape(-1, D)                                  # (D, D)
+        dwv = x2.T @ dV.reshape(-1, D)                                  # (D, D)
+        return [dx, dwq, dwk, dwv]

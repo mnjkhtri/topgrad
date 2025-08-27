@@ -111,20 +111,22 @@ def test_op_relu(shape):
         err_msg="Backward pass gradient for ReLU does not match PyTorch"
     )
 
-@pytest.mark.parametrize("x_shape, in_features, out_features", [
+@pytest.mark.parametrize("x_shape, inout", [
     # 1D (Batchless)
-    ((32,), 32, 64),
-    ((1,), 1, 1),
+    ((32,), (32, 64)),
+    ((1,), (1, 1)),
     # 2D (Standard Batched)
-    ((16, 32), 32, 64),
-    ((128, 784), 784, 10),
+    ((16, 32), (32, 64)),
+    ((128, 784), (784, 10)),
     # 3D (e.g., Batch, Sequence Length, Features)
-    ((8, 10, 16), 16, 32),
+    ((8, 10, 16), (16, 32)),
     # 4D (e.g., Batch, Height, Width, Channels)
-    ((4, 5, 5, 8), 8, 16),
+    ((4, 5, 5, 8), (8, 16)),
 ])
-def test_op_linear(x_shape, in_features, out_features):
-    # Initialize random data for inputs, weights, and bias
+def test_op_linear(x_shape, inout):
+
+    in_features, out_features = inout
+
     x_np = np.random.randn(*x_shape).astype(np.float32)
     w_np = np.random.randn(in_features, out_features).astype(np.float32)
     b_np = np.random.randn(out_features).astype(np.float32)
@@ -337,4 +339,79 @@ def test_op_batchnorm(x_shape, mode):
         atol=1e-4,
         err_msg=f"dL/beta mismatch for shape {x_shape} (mode={mode})"
     )
-    
+
+@pytest.mark.parametrize("x_shape", [
+    ((1, 2, 4)),
+    ((2, 4, 8)),
+    ((4, 16, 16)),
+    ((16, 256, 1)),
+    ((1, 256, 8)), # drifts
+])
+def test_op_attention(x_shape):
+
+    B, T, D = x_shape
+
+    rng = np.random.default_rng(0)
+    x_np  = rng.standard_normal((B, T, D), dtype=np.float32)
+    wq_np = rng.standard_normal((D, D), dtype=np.float32)
+    wk_np = rng.standard_normal((D, D), dtype=np.float32)
+    wv_np = rng.standard_normal((D, D), dtype=np.float32)
+
+    x_t  = Tensor(x_np.copy())
+    wq_t = Tensor(wq_np.copy())
+    wk_t = Tensor(wk_np.copy())
+    wv_t = Tensor(wv_np.copy())
+
+    y_t = x_t.attention(wq_t, wk_t, wv_t)  # (B, T, D)
+
+    x_th  = torch.tensor(x_np.copy(), requires_grad=True)
+    wq_th = torch.tensor(wq_np.copy(), requires_grad=True)
+    wk_th = torch.tensor(wk_np.copy(), requires_grad=True)
+    wv_th = torch.tensor(wv_np.copy(), requires_grad=True)
+
+    Q = x_th @ wq_th  # (B, T, D)
+    K = x_th @ wk_th
+    V = x_th @ wv_th
+
+    # SDPA expects (B, nH, T, dH). Here nH=1, dH=D.
+    Qh = Q.unsqueeze(1)
+    Kh = K.unsqueeze(1)
+    Vh = V.unsqueeze(1)
+
+    Yh = torch.nn.functional.scaled_dot_product_attention(Qh, Kh, Vh, is_causal=False, dropout_p=0.0)  # (B, 1, T, D)
+    y_ref = Yh.squeeze(1)  # (B, T, D)
+
+    np.testing.assert_allclose(
+        y_t.data, 
+        y_ref.detach().cpu().numpy(),
+        rtol=1e-4, atol=1e-4,
+        err_msg=f"Attention forward mismatch for (B={B},T={T},D={D})"
+    )
+
+    y_t.sum().backward()
+    y_ref.sum().backward()
+
+    np.testing.assert_allclose(
+        x_t.grad, 
+        x_th.grad.detach().cpu().numpy(),
+        rtol=1e-4, atol=1e-4,
+        err_msg=f"dL/dx mismatch for {x_shape}"
+    )
+    np.testing.assert_allclose(
+        wq_t.grad,
+        wq_th.grad.detach().cpu().numpy(),
+        rtol=1e-4, atol=1e-4,
+        err_msg=f"dL/dWq mismatch for {x_shape}"
+    )
+    np.testing.assert_allclose(
+        wk_t.grad,
+        wk_th.grad.detach().cpu().numpy(),
+        rtol=1e-4, atol=1e-4,
+        err_msg=f"dL/dWk mismatch for {x_shape}"
+    )
+    np.testing.assert_allclose(
+        wv_t.grad,
+        wv_th.grad.detach().cpu().numpy(),
+        rtol=1e-4, atol=1e-4,
+        err_msg=f"dL/dWv mismatch for {x_shape}"
+    )
