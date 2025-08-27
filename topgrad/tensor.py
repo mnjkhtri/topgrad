@@ -93,6 +93,7 @@ class Tensor:
     def linear(self, w_t, b_t): return Linear.apply(self, w_t, b_t)
     def conv(self, w_t, b_t, stride, padding): return Conv.apply(self, w_t, b_t, stride, padding)
     def batchnorm(self, gamma_t, beta_t, state, eps=1e-5, momentum=0.1, mode='T'): return BatchNorm.apply(self, gamma_t, beta_t, state, eps, momentum, mode)
+    def layernorm(self, gamma_t, beta_t, eps=1e-5): return LayerNorm.apply(self, gamma_t, beta_t, eps)
     def attention(self, wq_t, wk_t, wv_t): return Attention.apply(self, wq_t, wk_t, wv_t)
 
 
@@ -344,7 +345,37 @@ class BatchNorm(Op):
         var_correction = inv_std * m2 * x_hat_flat if mode == 'T' else 0.0          # (1, C)
         dx_flat = glocal - mean_correction - var_correction                         # (N, C)
         return [dx_flat.reshape(os), (grad_flat * x_hat_flat).sum(axis=0), grad_flat.sum(axis=0)]
-    
+
+class LayerNorm(Op):
+    def forward(self, x, gamma, beta, eps=1e-5):
+        """
+        x:     (..., C), ndim >= 2
+        gamma: (C,)
+        beta:  (C,)
+        """
+        mean = x.mean(axis=-1, keepdims=True)        # (..., 1)
+        var  = x.var (axis=-1, keepdims=True)        # (..., 1)
+        inv_std = 1.0 / np.sqrt(var + eps)           # (..., 1)
+        x_hat = (x - mean) * inv_std                 # (..., C)
+        y = gamma * x_hat + beta                     # broadcast (C,) → (..., C)
+        self.save_for_backward(x_hat, inv_std, gamma, x.shape)
+        return y
+
+    def backward(self, grad):
+        x_hat, inv_std, gamma, os = self._intermediate
+        grad_flat = grad.reshape(-1, os[-1])            # (*, C)
+        x_hat_flat = x_hat.reshape(-1, os[-1])          # (*, C)
+        inv_std_flat = inv_std.reshape(-1, 1)           # (*, 1)
+        dgamma = (grad_flat * x_hat_flat).sum(axis=0)   # (C,)
+        dbeta  = grad_flat.sum(axis=0)                  # (C,)
+        N = grad_flat.shape[-1]
+        g_hat = gamma * grad_flat                       # (*, C)
+        m1 = g_hat.mean(axis=-1, keepdims=True)         # (*, 1)
+        m2 = (g_hat * x_hat_flat).mean(axis=-1, keepdims=True)      # (*, 1)
+        dx_flat = inv_std_flat * (g_hat - m1 - x_hat_flat * m2)     # (*, C)
+        dx = dx_flat.reshape(os)
+        return [dx, dgamma, dbeta]
+
 class Add(Op):
     # needed for resnet
     def forward(self, x, y):

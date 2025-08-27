@@ -341,6 +341,77 @@ def test_op_batchnorm(x_shape, mode):
     )
 
 @pytest.mark.parametrize("x_shape", [
+    ((128, 784)),
+    ((128, 784)),
+    # 3D, sequences
+    ((8, 10, 16)),
+    ((8, 10, 16)),
+    # 4D, grids
+    ((4, 5, 5, 8)),
+    ((4, 5, 5, 8)),
+])
+def test_op_layernorm(x_shape):
+
+    eps = 1e-5
+    num_features = x_shape[-1]
+
+    x_np     = np.random.randn(*x_shape).astype(np.float32)
+    gamma_np = np.random.randn(num_features).astype(np.float32)
+    beta_np  = np.random.randn(num_features).astype(np.float32)
+
+    x_t     = Tensor(x_np.copy())
+    gamma_t = Tensor(gamma_np.copy())
+    beta_t  = Tensor(beta_np.copy())
+
+    x_tr     = torch.tensor(x_np.copy(), dtype=torch.float32, requires_grad=True)
+    gamma_tr = torch.tensor(gamma_np.copy(), dtype=torch.float32, requires_grad=True)
+    beta_tr  = torch.tensor(beta_np.copy(), dtype=torch.float32, requires_grad=True)
+
+    y_t = x_t.layernorm(gamma_t, beta_t, eps=eps)
+
+    y_tr = torch.nn.functional.layer_norm(
+        x_tr,
+        normalized_shape=(num_features,),
+        weight=gamma_tr,
+        bias=beta_tr,
+        eps=eps,
+    )
+
+    np.testing.assert_allclose(
+        y_t.data,
+        y_tr.detach().numpy(),
+        rtol=1e-4,
+        atol=1e-4,
+        err_msg=f"Forward pass for shape {x_shape} does not match PyTorch",
+    )
+
+    # Backward
+    y_t.sum().backward()
+    y_tr.sum().backward()
+
+    np.testing.assert_allclose(
+        x_t.grad,
+        x_tr.grad.detach().numpy(),
+        rtol=1e-4,
+        atol=1e-4,
+        err_msg=f"dL/dx mismatch for shape {x_shape})"
+    )
+    np.testing.assert_allclose(
+        gamma_t.grad,
+        gamma_tr.grad.detach().numpy(),
+        rtol=1e-4,
+        atol=1e-4,
+        err_msg=f"dL/dgamma mismatch for shape {x_shape})"
+    )
+    np.testing.assert_allclose(
+        beta_t.grad,
+        beta_tr.grad.detach().numpy(),
+        rtol=1e-4,
+        atol=1e-4,
+        err_msg=f"dL/dbeta mismatch for shape {x_shape})"
+    )
+
+@pytest.mark.parametrize("x_shape", [
     ((1, 2, 4)),
     ((2, 4, 8)),
     ((4, 16, 16)),
