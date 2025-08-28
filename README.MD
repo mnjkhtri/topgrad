@@ -43,6 +43,8 @@ python3 -m examples.<insert name here>
     - transformer style
     - original: layernorm(x + attention(x))
     - new: x + attention(layernorm(x))
+5. vit minst:
+    - todo
 -----
 
 The playground folder is where I play with concepts in PyTorch before porting to topgrad.
