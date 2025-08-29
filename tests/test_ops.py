@@ -44,6 +44,48 @@ def test_op_sum(shape):
     (16, 64),        # 2D Rectangular Matrix
     (8, 16, 8),      # 3D Tensor
 ])
+def test_op_neg(shape):
+
+    # Create identical inputs
+    input_np = np.random.randn(*shape).astype(np.float32)
+
+    input_t = Tensor(input_np.copy())
+    input_torch = torch.tensor(input_np.copy(), requires_grad=True)
+
+    # Forward pass
+    result_t = input_t.neg()
+    result_torch = -input_torch
+
+    np.testing.assert_allclose(
+        result_t.data,
+        result_torch.detach().numpy(),
+        rtol=1e-4,
+        atol=1e-4,
+        err_msg="Forward pass result for Neg does not match PyTorch"
+    )
+
+    # Backward pass
+    # Use a scalar loss to make .backward() valid
+    loss_t = result_t.sum()
+    loss_torch = result_torch.sum()
+
+    loss_t.backward()
+    loss_torch.backward()
+
+    np.testing.assert_allclose(
+        input_t.grad,
+        input_torch.grad.numpy(),
+        rtol=1e-4,
+        atol=1e-4,
+        err_msg="Backward pass gradient for Neg does not match PyTorch"
+    )
+
+@pytest.mark.parametrize("shape", [
+    (100,),          # 1D Vector
+    (32, 32),        # 2D Square Matrix
+    (16, 64),        # 2D Rectangular Matrix
+    (8, 16, 8),      # 3D Tensor
+])
 def test_op_add(shape):
 
     input_a_np = np.random.randn(*shape).astype(np.float32)
@@ -128,4 +170,41 @@ def test_op_mul(shape):
         rtol=1e-4,
         atol=1e-4,
         err_msg="Backward pass gradient for Mul does not match PyTorch"
+    )
+
+@pytest.mark.parametrize("shape", [
+    (100,),          # 1D Vector
+    (32, 32),        # 2D Square Matrix
+    (16, 64),        # 2D Rectangular Matrix
+    (8, 16, 8),      # 3D Tensor
+])
+def test_op_mean(shape):
+
+    input_np = np.random.randn(*shape).astype(np.float32)
+
+    input_t = Tensor(input_np.copy())
+    input_torch = torch.tensor(input_np.copy(), requires_grad=True)
+
+    # Forward pass
+    result_t = input_t.mean()
+    result_torch = input_torch.mean()
+
+    np.testing.assert_allclose(
+        result_t.data,
+        result_torch.detach().numpy(),
+        rtol=1e-4,
+        atol=1e-4,
+        err_msg="Forward pass result for Mean does not match PyTorch"
+    )
+
+    # Backward pass
+    result_t.backward()
+    result_torch.backward()
+
+    np.testing.assert_allclose(
+        input_t.grad,
+        input_torch.grad.numpy(),
+        rtol=1e-4,
+        atol=1e-4,
+        err_msg="Backward pass gradient for Mean does not match PyTorch"
     )

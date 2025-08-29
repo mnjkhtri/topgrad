@@ -5,6 +5,7 @@ class Tensor:
         if not isinstance(data, np.ndarray):
             print("Error constructing tensor with {data}")
             assert(False)
+
         self.data = data
         self.grad = None
 
@@ -82,9 +83,12 @@ class Tensor:
             t.backward(False)
 
     # foundational ops:
+    def neg(self): return Neg.apply(self)
     def sum(self): return Sum.apply(self)
+    def mean(self): return Mean.apply(self)
     def add(self, x): return Add.apply(self, x)
     def mul(self, x): return Mul.apply(self, x)
+    # Note: sum and mean are reduce ops that produce reduced tensors that can nolonger be applied with other ops
 
     # nn ops:
     def reshape(self, ns): return Reshape.apply(self, ns)
@@ -130,6 +134,12 @@ class Op:
 
 # Test ops:
 
+class Neg(Op):
+    def forward(self, x):
+        return -x
+    def backward(self, grad):
+        return [-grad]
+
 class Sum(Op):
     def forward(self, x):
         self.save_for_backward(x.shape)
@@ -137,6 +147,15 @@ class Sum(Op):
     def backward(self, grad):
         x_shape, = self._intermediate
         return [grad * np.ones(x_shape)]
+
+class Mean(Op):
+    def forward(self, x):
+        self.save_for_backward(x.shape)
+        return np.array(x.mean())
+    def backward(self, grad):
+        x_shape, = self._intermediate
+        numel = np.prod(x_shape)
+        return [grad * np.ones(x_shape) / numel]
 
 class Mul(Op):
     def forward(self, x, y):
@@ -146,6 +165,13 @@ class Mul(Op):
       x, y = self._intermediate
       return [grad * y, grad * x]
     
+# as a residual op:
+class Add(Op):
+    def forward(self, x, y):
+        return x + y
+    def backward(self, grad):
+        return [grad, grad]
+
 # NN ops:
 class LogSoftmax(Op):
     # assume axis = -1
@@ -375,13 +401,6 @@ class LayerNorm(Op):
         dx_flat = inv_std_flat * (g_hat - m1 - x_hat_flat * m2)     # (*, C)
         dx = dx_flat.reshape(os)
         return [dx, dgamma, dbeta]
-
-class Add(Op):
-    # needed for resnet
-    def forward(self, x, y):
-        return x + y
-    def backward(self, grad):
-        return [grad, grad]
     
 class Attention(Op):
     """
