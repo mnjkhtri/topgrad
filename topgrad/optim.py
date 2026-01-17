@@ -1,5 +1,3 @@
-import numpy as np
-
 class Optimizer:
     def __init__(self, params):
         self.params = params
@@ -7,6 +5,7 @@ class Optimizer:
     def zero_grad(self):
         for p in self.params:
             p.grad = None
+
 
 class SGD(Optimizer):
     def __init__(self, params, lr=0.001):
