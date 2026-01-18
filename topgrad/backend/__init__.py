@@ -1,9 +1,9 @@
 from typing import Union
 
-from .numpy_ops import NumpyBackend
+from .numpy import NumpyBackend
 
 try:  # pragma: no cover - triton is optional
-    from .triton_ops import TritonBackend
+    from .triton import TritonBackend
 except Exception:  # pragma: no cover - keep numpy-only environments working
     TritonBackend = None
 
