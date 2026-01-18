@@ -1,5 +1,7 @@
 import math
 
+import numpy as np
+
 from topgrad.backend import get_backend
 
 
@@ -25,21 +27,25 @@ class Tensor:
         backend = get_backend()
         if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
             shape = tuple(shape[0])
-        return cls(backend.zeros(shape, dtype=dtype or backend.float))
+        return cls(
+            backend.wrap(np.zeros(shape, dtype=np.float32 if dtype is None else dtype))
+        )
 
     @classmethod
     def ones(cls, *shape, dtype=None):
         backend = get_backend()
         if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
             shape = tuple(shape[0])
-        return cls(backend.ones(shape, dtype=dtype or backend.float))
+        return cls(
+            backend.wrap(np.ones(shape, dtype=np.float32 if dtype is None else dtype))
+        )
 
     @classmethod
     def randn(cls, *shape, dtype=None):
         backend = get_backend()
         if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
             shape = tuple(shape[0])
-        return cls(backend.randn(shape, dtype=dtype or backend.float))
+        return cls(backend.wrap(np.random.randn(*shape).astype(dtype or np.float32)))
 
     @classmethod
     def He(cls, *shape, dist="normal", dtype=None):
@@ -55,8 +61,11 @@ class Tensor:
 
         if dist == "normal":
             std_dev = math.sqrt(2.0 / fan_in)
-            storage = backend.randn(shape, dtype=dtype or backend.float)
-            return cls(storage * std_dev)
+            return cls(
+                backend.wrap(
+                    np.random.randn(*shape).astype(dtype or np.float32) * std_dev
+                )
+            )
 
         raise NotImplementedError("Backend does not support this distribution.")
 
@@ -78,8 +87,11 @@ class Tensor:
 
         if dist == "normal":
             std_dev = math.sqrt(2.0 / (fan_in + fan_out))
-            storage = backend.randn(shape, dtype=dtype or backend.float)
-            return cls(storage * std_dev)
+            return cls(
+                backend.wrap(
+                    np.random.randn(*shape).astype(dtype or np.float32) * std_dev
+                )
+            )
 
         raise NotImplementedError("Backend does not support this distribution.")
 
@@ -89,7 +101,7 @@ class Tensor:
 
         if self.grad is None and allow_fill:
             backend = get_backend()
-            self.grad = backend.ones(self.shape, dtype=self.data.dtype)
+            self.grad = backend.wrap(np.ones(self.shape, dtype=np.float32))
 
         assert self.grad is not None
 

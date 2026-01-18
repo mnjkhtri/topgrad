@@ -1,3 +1,6 @@
+from topgrad.backend import get_backend
+
+
 class Optimizer:
     def __init__(self, params):
         self.params = params
@@ -14,4 +17,8 @@ class SGD(Optimizer):
 
     def step(self):
         for t in self.params:
-            t.data -= self.lr * t.grad
+            if t.grad is None:
+                continue
+            backend = get_backend()
+            update = backend.mul(t.grad, -self.lr)
+            t.data = backend.add(t.data, update)

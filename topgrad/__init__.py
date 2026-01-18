@@ -1,5 +1,6 @@
 from topgrad.backend import (
     NumpyBackend,
+    TritonBackend,
     available_backends,
     get_backend,
     set_backend,
@@ -7,6 +8,7 @@ from topgrad.backend import (
 
 __all__ = [
     "NumpyBackend",
+    "TritonBackend",
     "available_backends",
     "get_backend",
     "set_backend",
