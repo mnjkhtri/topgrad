@@ -5,36 +5,37 @@ import numpy as np
 import torch
 
 from ..op import Op
-from ._kernels import (
+from .data import TritonTensor
+from .kernels._common import (
     _batched_matmul,
     _bias_add,
-    _col2im,
     _col_sum,
     _colwise_mul,
-    _colwise_norm,
     _elementwise_add,
     _elementwise_mul,
     _fill_const,
     _fill_from_scalar,
-    _im2col,
-    _logsoftmax_backward,
-    _logsoftmax_forward,
     _matmul,
     _numel,
-    _relu_backward,
-    _relu_forward,
     _require_contiguous,
     _reshape_to_2d,
     _row_sum,
     _rowwise_add,
     _rowwise_mul,
-    _rowwise_norm,
     _rsqrt,
-    _softmax_backward,
-    _softmax_forward,
     _triton_sum,
 )
-from .data import TritonTensor
+from .kernels.batchnorm import _colwise_norm_affine, _colwise_norm_affine_fused
+from .kernels.conv import _col2im, _im2col
+from .kernels.layernorm import _layernorm_backward, _layernorm_fused
+from .kernels.linear import _linear
+from .kernels.relu import _relu_backward, _relu_forward
+from .kernels.softmax import (
+    _logsoftmax_backward,
+    _logsoftmax_forward,
+    _softmax_backward,
+    _softmax_forward,
+)
 
 
 class TritonBackend:
@@ -130,27 +131,6 @@ class Mean(Op):
         ]
 
 
-class Mul(Op):
-    """elementwise multiply; use for masking or loss scaling"""
-
-    def forward(self, x, y):
-        raw_x = x
-        raw_y = y
-        self.save_for_backward(raw_x, raw_y)
-        return _elementwise_mul(raw_x, raw_y)
-
-    def backward(self, grad):
-        raw_grad = grad
-        raw_x, raw_y = self._intermediate
-        if isinstance(raw_y, torch.Tensor):
-            return [
-                _elementwise_mul(raw_grad, raw_y),
-                _elementwise_mul(raw_grad, raw_x),
-            ]
-
-        return [_elementwise_mul(raw_grad, raw_y)]
-
-
 class ReLU(Op):
     """relu nonlinearity"""
 
@@ -180,6 +160,40 @@ class LogSoftmax(Op):
         return [_logsoftmax_backward(raw_grad, y)]
 
 
+class Add(Op):
+    """addition for skip paths"""
+
+    def forward(self, x, y):
+        raw_x = x
+        raw_y = y
+        return _elementwise_add(raw_x, raw_y)
+
+    def backward(self, grad):
+        raw_grad = grad
+        return [raw_grad, raw_grad]
+
+
+class Mul(Op):
+    """elementwise multiply; use for masking or loss scaling"""
+
+    def forward(self, x, y):
+        raw_x = x
+        raw_y = y
+        self.save_for_backward(raw_x, raw_y)
+        return _elementwise_mul(raw_x, raw_y)
+
+    def backward(self, grad):
+        raw_grad = grad
+        raw_x, raw_y = self._intermediate
+        if isinstance(raw_y, torch.Tensor):
+            return [
+                _elementwise_mul(raw_grad, raw_y),
+                _elementwise_mul(raw_grad, raw_x),
+            ]
+
+        return [_elementwise_mul(raw_grad, raw_y)]
+
+
 class Linear(Op):
     """dense layer primitive"""
 
@@ -189,8 +203,7 @@ class Linear(Op):
         raw_w = w
         raw_b = b
         self.save_for_backward(raw_x, raw_w)
-        out = _matmul(raw_x, raw_w)
-        return _bias_add(out, raw_b)
+        return _linear(raw_x, raw_w, raw_b)
 
     def backward(self, grad):
         raw_grad = grad
@@ -217,19 +230,6 @@ class Reshape(Op):
         raw_grad = grad
         os, _ = self._intermediate
         return [raw_grad.reshape(os)]
-
-
-class Add(Op):
-    """addition for skip paths"""
-
-    def forward(self, x, y):
-        raw_x = x
-        raw_y = y
-        return _elementwise_add(raw_x, raw_y)
-
-    def backward(self, grad):
-        raw_grad = grad
-        return [raw_grad, raw_grad]
 
 
 class Conv(Op):
@@ -324,16 +324,11 @@ class BatchNorm(Op):
             raise ValueError("batchnorm gamma/beta shape mismatch")
 
         x2d, n_rows, _ = _reshape_to_2d(raw_x)
-        inv_rows = 1.0 / float(n_rows) if n_rows else 0.0
 
         if mode == "T":
-            sum_x = _col_sum(x2d)
-            mean = _elementwise_mul(sum_x, inv_rows)
-            x2d_sq = _elementwise_mul(x2d, x2d)
-            sumsq = _col_sum(x2d_sq)
-            mean_sq = _elementwise_mul(sumsq, inv_rows)
-            mean2 = _elementwise_mul(mean, mean)
-            var = _elementwise_add(mean_sq, _elementwise_mul(mean2, -1.0))
+            mean, var, inv_std, x_hat, y2d = _colwise_norm_affine_fused(
+                x2d, raw_gamma, raw_beta, eps
+            )
             if state is not None:
                 state.running_mean = _elementwise_add(
                     _elementwise_mul(state.running_mean, 1.0 - momentum),
@@ -349,10 +344,9 @@ class BatchNorm(Op):
             mean = state.running_mean
             var = state.running_var
 
-        inv_std = _rsqrt(var, eps)
-        x_hat = _colwise_norm(x2d, mean, inv_std)
-        y2d = _colwise_mul(x_hat, raw_gamma)
-        y2d = _bias_add(y2d, raw_beta)
+        if mode == "E":
+            inv_std = _rsqrt(var, eps)
+            x_hat, y2d = _colwise_norm_affine(x2d, mean, inv_std, raw_gamma, raw_beta)
         y = y2d.reshape(raw_x.shape)
         self.save_for_backward(x_hat, inv_std, raw_gamma, raw_x.shape, mode)
         return y
@@ -408,19 +402,7 @@ class LayerNorm(Op):
             raise ValueError("layernorm gamma/beta shape mismatch")
 
         x2d, _, n_cols = _reshape_to_2d(raw_x)
-        inv_cols = 1.0 / float(n_cols) if n_cols else 0.0
-
-        sum_x = _row_sum(x2d)
-        mean = _elementwise_mul(sum_x, inv_cols)
-        x2d_sq = _elementwise_mul(x2d, x2d)
-        sumsq = _row_sum(x2d_sq)
-        mean_sq = _elementwise_mul(sumsq, inv_cols)
-        mean2 = _elementwise_mul(mean, mean)
-        var = _elementwise_add(mean_sq, _elementwise_mul(mean2, -1.0))
-        inv_std = _rsqrt(var, eps)
-        x_hat = _rowwise_norm(x2d, mean, inv_std)
-        y2d = _colwise_mul(x_hat, raw_gamma)
-        y2d = _bias_add(y2d, raw_beta)
+        x_hat, inv_std, y2d = _layernorm_fused(x2d, raw_gamma, raw_beta, eps)
         y = y2d.reshape(raw_x.shape)
         self.save_for_backward(x_hat, inv_std, raw_gamma, raw_x.shape)
         return y
@@ -431,18 +413,9 @@ class LayerNorm(Op):
         x_hat, inv_std, gamma, os = self._intermediate
         grad2d, n_rows, n_cols = _reshape_to_2d(raw_grad)
         x_hat2d = x_hat.reshape(grad2d.shape)
-        inv_cols = 1.0 / float(n_cols) if n_cols else 0.0
-
-        dbeta = _col_sum(grad2d)
-        dgamma = _col_sum(_elementwise_mul(grad2d, x_hat2d))
-
-        g_hat = _colwise_mul(grad2d, gamma)
-        m1 = _elementwise_mul(_row_sum(g_hat), inv_cols)
-        m2 = _elementwise_mul(_row_sum(_elementwise_mul(g_hat, x_hat2d)), inv_cols)
-        tmp = _rowwise_add(g_hat, _elementwise_mul(m1, -1.0))
-        xhat_m2 = _rowwise_mul(x_hat2d, m2)
-        tmp = _elementwise_add(tmp, _elementwise_mul(xhat_m2, -1.0))
-        dx2d = _rowwise_mul(tmp, inv_std)
+        dx2d, dgamma, dbeta = _layernorm_backward(
+            grad2d, x_hat2d, inv_std, gamma
+        )
 
         return [
             dx2d.reshape(os),
