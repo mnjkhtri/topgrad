@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 
-from topgrad.backend import get_backend
+from topgrad.backend.config import get_backend
 
 
 class Tensor:
@@ -96,23 +96,18 @@ class Tensor:
         raise NotImplementedError("Backend does not support this distribution.")
 
     def backward(self, allow_fill=True):
+        backend = get_backend()
         if self._op is None:
             return
-
         if self.grad is None and allow_fill:
-            backend = get_backend()
             self.grad = backend.wrap(np.ones(self.shape, dtype=np.float32))
-
         assert self.grad is not None
-
         grads = self._op.backward(self.grad)
-
         for t, g in zip(self._op.parents, grads):
             if t.grad is None:
                 t.grad = g
             else:
-                t.grad = t.grad + g
-
+                t.grad = backend.add(t.grad, g)  # non grad math support
             t.backward(False)
 
     def sum(self):

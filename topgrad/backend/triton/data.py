@@ -18,6 +18,7 @@ ALLOWED_METADATA_OPS = {
         _get_aten_op("size"),  # Tensor.size()
         _get_aten_op("stride"),  # Tensor.stride()
         _get_aten_op("numel"),  # Tensor.numel()
+        _get_aten_op("unbind"),  # Needed for unpacking shapes (e.g. m, n = x.shape)
         _get_aten_op("dim"),  # Tensor.dim()
         _get_aten_op("is_contiguous"),  # Tensor.is_contiguous()
         _get_aten_op("contiguous"),  # Tensor.contiguous()
@@ -33,6 +34,18 @@ class TritonTensor(torch.Tensor):
         if isinstance(elem, TritonTensor):
             return elem
         return torch.Tensor._make_subclass(cls, elem, elem.requires_grad)
+
+    @classmethod
+    def empty(cls, *shape, dtype=None, device=None):
+        return cls(torch.empty(*shape, dtype=dtype, device=device))
+
+    @classmethod
+    def empty_like(cls, x, dtype=None, device=None):
+        return cls(torch.empty_like(x, dtype=dtype, device=device))
+
+    @classmethod
+    def zeros(cls, *shape, dtype=None, device=None):
+        return cls(torch.zeros(*shape, dtype=dtype, device=device))
 
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):

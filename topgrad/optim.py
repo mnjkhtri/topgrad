@@ -1,4 +1,4 @@
-from topgrad.backend import get_backend
+from topgrad.backend.config import get_backend
 
 
 class Optimizer:
