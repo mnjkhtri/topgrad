@@ -4,7 +4,8 @@ from .numpy import NumpyBackend
 
 try:  # pragma: no cover - triton is optional
     from .triton import TritonBackend
-except Exception:  # pragma: no cover - keep numpy-only environments working
+except Exception as exc:  # pragma: no cover - keep numpy-only environments working
+    _TRITON_IMPORT_ERROR = exc
     TritonBackend = None
 
 _CURRENT_BACKEND = NumpyBackend()
@@ -23,7 +24,9 @@ def set_backend(backend: Union[str, NumpyBackend]):
             _CURRENT_BACKEND = NumpyBackend()
         elif name == "triton":
             if TritonBackend is None:
-                raise ImportError("Triton backend is unavailable; install triton.")
+                raise ImportError(
+                    "Triton backend is unavailable; see prior import error."
+                ) from _TRITON_IMPORT_ERROR
             _CURRENT_BACKEND = TritonBackend()
         else:
             raise ValueError(f"unknown backend '{backend}'")
